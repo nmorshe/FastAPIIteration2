@@ -4,9 +4,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from functools import lru_cache
 
-from pprint import pprint
-from pathlib import Path
-
 envPath = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 
 class BackendSettings(BaseSettings):

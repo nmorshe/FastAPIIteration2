@@ -7,13 +7,11 @@ from fastapi import FastAPI, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Annotated, Union, List
 from .config import settings
-from dotenv import load_dotenv
 
 ########################################################################################
 
 from .data import ROOT_DIR
 
-load_dotenv()
 
 FIREBASE_CRED = {
   "type": settings.type,
@@ -34,12 +32,20 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 class getModel(BaseModel):
-    item_id: Optional[str] = None
-    q: Optional[str] = None
+    equipment: str
+    type: Optional[str] = None
+    destroyed: Optional[int] = None
+    damaged: Optional[int] = None
+    abandoned: Optional[int] = None
+    captured: Optional[int] = None
 
 class postModel(BaseModel):
-    item_id: str
-    q: Optional[str] = None
+    equipment: str
+    type: str
+    destroyed: Optional[int] = 0
+    damaged: Optional[int] = 0
+    abandoned: Optional[int] = 0
+    captured: Optional[int] = 0
 
 app = FastAPI()
 
@@ -50,113 +56,20 @@ fullPath = ROOT_DIR + fileName
 
 # Helper Methods:
 
+async def retrieveData(data):
+    group = data.equipment
+    elemType = data.type
 
-"""
-Asynchronous function that parses data and returns a list of objects
-that matches the parameters of the given model. 
-"""
-async def retrieveData(currData, model: getModel):
-    dataset = currData['Items']
+    try:
 
-    if (len(dataset) == 0):
-        raise HTTPException(status_code=404, detail="Item not found")
-    
-    #Retrieving attributes from the inputed model
-    item_id = model.item_id
-    q = model.q
-
-    originalSize = len(dataset)
-
-    #Branches for filtering data:
-
-    #Filter based on item ID - Item ID is meant to be unique; hence possible O(1) situation
-    if (item_id and (len(item_id) > 0)):
-
-        # O(1) Handling
-
-        if (dataset[-1]['item_id'] == item_id):
-            dataset = [dataset[-1]]
-
-        elif (dataset[0]['item_id'] == item_id):
-            dataset = [dataset[0]]
+        if (elemType):
+            return db.collection(group).document(elemType).get().to_dict()
 
         else:
+            return [val.to_dict() for val in db.collection(group).stream()]
 
-            for i in range(len(dataset)):
-
-                if (dataset[i]['item_id'] == item_id):
-                    dataset = [dataset[i]]
-                    break
-
-            if (len(dataset) == originalSize):
-                raise HTTPException(status_code=404, detail="Item not found")
-
-    #Filter based on q parameter
-    if (q and (len(q) > 0)):
-        try:
-            dataset = [val for val in dataset if ("q" in val) and (val['q'] == q)]
-
-        except:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-    if (len(dataset) == 0):
-        raise HTTPException(status_code=404, detail="Item not found")
-        
-    return dataset
-
-async def readData():
-    try:
-        with (open(fullPath, 'r') as file):
-            fileData = json.load(file)
-            return fileData
-    
     except:
-        raise HTTPException(status_code=500, detail="Internal Service Error")
-    
-async def writeData(currData, data):
-    if (data == None):
-        return
-    
-    if (isinstance(data, dict)):
-        currData['Items'].append(data)
-
-    elif (isinstance(data, list)):
-        for val in data:
-            currData['Items'].append(val)
-
-    try:
-        with (open(fullPath, 'w') as file):
-            json.dump(currData, file)
-    
-    except:
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-async def deleteData(currData, data: Union[getModel, List[getModel]]):
-
-    try:
-
-        if (isinstance(data, list) and (len(data) == 1)):
-            if (currData['Items'][0] == data):
-                del currData['Items'][0]
-
-            if (currData['Items'][-1] == data):
-                del currData['Items'][-1]
-
-        currData['Items'] = [val for val in currData['Items'] if val not in data]
-        
-        with (open(fullPath, 'w') as file):
-            json.dump(currData, file)
-
-    except IOError:
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-async def updateData(target, currData, data):
-    await deleteData(currData, target)
-    await writeData(currData, data)
-
+        raise HTTPException(status_code=404, detail="Error, data not found")
 
 async def toJSON(model: Union[postModel, List[postModel]]):
 
@@ -175,28 +88,35 @@ async def toJSON(model: Union[postModel, List[postModel]]):
 #GET function for main default page
 @app.get('/')
 async def mainPage():
-    return {"Existing routes": ['items']}
+    return "Main API Front Page"
 
 #GET function for default items page
-@app.get('/items', response_model=list[getModel])
+@app.get('/items')
 async def getItem(model: Annotated[getModel, Query()]):
 
-    currData = await readData()
+    ref = await retrieveData(model)
 
-    # Retrieving the data
-    return await retrieveData(currData, model)
+    return ref
 
 #POST function for items page
 @app.post('/items')
 async def postItem(model: Union[postModel, List[postModel]]):
 
-    #Convert inserted model data to JSON
-    mainData = await toJSON(model)
+    #Convert inserted model data to dict
+    mainData = model.model_dump()
 
-    currData = await readData()
+    try:
+        if (isinstance(model, postModel)):
+            group = model.equipment
+            db.collection(group).add(document_data=mainData, document_id=mainData['type'])
 
-    #Write data into file
-    await writeData(currData, mainData)
+        elif (isinstance(model, list)):
+            for item in mainData:
+                group = item.equipment
+                db.collection(group).add(document_data=mainData, document_id=mainData['type'])
+
+    except:
+        raise HTTPException(status_code=500, detail="Internal Server Failure")
 
     #Return data
     return mainData
@@ -205,26 +125,10 @@ async def postItem(model: Union[postModel, List[postModel]]):
 @app.delete('/items', response_model=list[getModel])
 async def deleteItem(model: Annotated[getModel, Query()]):
 
-    currData = await readData()
-
-    # Retrieving attributes from the inputed model
-    targets = await retrieveData(currData, model)
-
-    # Deleting targeted data
-    await deleteData(currData, targets)
-
-    return (targets)
+    return 
 
 @app.put('/items', response_model=list[getModel])
 async def updateItem(model: postModel):
 
-    val = getModel(item_id=model.item_id)
-    
-    currData = await readData()
-    target = await retrieveData(currData, val)
-    newData = await toJSON(model)
-
-    await updateData(target, currData, newData)
-
-    return target
+    return 
 
